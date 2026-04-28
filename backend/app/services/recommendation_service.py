@@ -8,6 +8,7 @@ from app.models.recommendations import (
     RankedHotel,
     RecommendationSearchResponse,
 )
+from app.services.preference_extractor import extract_preferences_with_source
 
 
 class HotelRecord(TypedDict):
@@ -105,44 +106,6 @@ MOCK_HOTELS: list[HotelRecord] = [
 ]
 
 
-CITY_KEYWORDS = ("lahore", "karachi", "islamabad")
-AREA_KEYWORDS = ("gulberg", "johar town", "dha", "clifton", "f-8")
-
-
-def extract_preferences(query: str) -> ExtractedPreferences:
-    lowered = query.lower()
-    city = next((c.title() for c in CITY_KEYWORDS if c in lowered), None)
-    area = next((a.title() for a in AREA_KEYWORDS if a in lowered), None)
-
-    priorities: list[str] = []
-    concerns: list[str] = []
-
-    if "parking" in lowered:
-        priorities.append("parking")
-    if "clean" in lowered or "cleanliness" in lowered:
-        priorities.append("cleanliness")
-    if "wifi" in lowered or "internet" in lowered:
-        priorities.append("wifi")
-    if "budget" in lowered or "cheap" in lowered or "afford" in lowered:
-        priorities.append("budget")
-    if "family" in lowered:
-        priorities.append("family-friendly")
-    if "business" in lowered or "work" in lowered:
-        priorities.append("business-friendly")
-
-    if "noise" in lowered:
-        concerns.append("noise")
-    if "dirty" in lowered:
-        concerns.append("cleanliness")
-
-    return ExtractedPreferences(
-        city=city,
-        area=area,
-        priorities=priorities,
-        concerns=concerns,
-    )
-
-
 def score_hotel(hotel: HotelRecord, preferences: ExtractedPreferences) -> tuple[int, list[str]]:
     score = 40
     reason_codes: list[str] = []
@@ -155,7 +118,19 @@ def score_hotel(hotel: HotelRecord, preferences: ExtractedPreferences) -> tuple[
         score += 15
         reason_codes.append("area_match")
 
-    for priority in preferences.priorities:
+    if preferences.budget_per_night is not None:
+        if hotel["price_per_night"] <= preferences.budget_per_night:
+            score += 10
+            reason_codes.append("budget_cap_match")
+        else:
+            score += 1
+            reason_codes.append("budget_cap_exceeded")
+
+    if preferences.needs_parking:
+        score += 10 if "parking" in hotel["amenities"] else -5
+        reason_codes.append("parking_required")
+
+    for priority in preferences.preferences:
         if priority == "parking":
             score += 10 if "parking" in hotel["amenities"] else -5
             reason_codes.append("parking_priority")
@@ -181,7 +156,7 @@ def score_hotel(hotel: HotelRecord, preferences: ExtractedPreferences) -> tuple[
 
 
 def build_recommendation(query: str) -> RecommendationSearchResponse:
-    extracted_preferences = extract_preferences(query)
+    extracted_preferences, extraction_source = extract_preferences_with_source(query)
 
     ranked_hotels: list[RankedHotel] = []
     for hotel in MOCK_HOTELS:
@@ -226,6 +201,7 @@ def build_recommendation(query: str) -> RecommendationSearchResponse:
         )
 
     return RecommendationSearchResponse(
+        extraction_source=extraction_source,
         extracted_preferences=extracted_preferences,
         ranked_hotels=ranked_hotels,
         comparison_data=comparison_data,
